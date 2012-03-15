@@ -3,101 +3,103 @@ use strict;
 use Net::FTP;
 use Net::SFTP;
 use Net::SFTP::Attributes;
-use Text::CSV;
-use FileHandle;
+use File::Basename;
+use Getopt::Long;
 
 # Set DEBUG equal to 1 to print debugging information
 #local ($DEBUG) = 1;
 #$| = 1;
 
 my $DESTDIR="IODA_TEST_UPLOAD";
+my $DESTFILE="25MBFLAC.file";
 my $DIREXISTS=0;
+my $FILEEXISTS=0;
 my $DIRATTRIBS = Net::SFTP::Attributes->new();
 
-my $FILESTOUPLOAD = 2;
-my $FILESIZE = 25; # MB
+my $FILE = "/usr/local/Scriptz/25MBFLAC.file"; 
+unless ( -e $FILE ) {
+    die "No file found for $FILE - $!\n";
+}
+
+my $FILESIZE = (-s $FILE) / 1048576; # MB
+
+unless ( -f $FILE ) {
+    die "No $FILE found\n";
+}
 
 chomp(my $date=`date +"%m-%d-%y"`);
-open(REPORT, ">DSP-DELIVERY-SPEED-REPORTFILE-" . $date . ".txt") || die "DEID! : $!\n";
-REPORT->autoflush(1);
 
-print REPORT "DSP DELIVERY SPEED TESTS - $date\n";
-print REPORT "=========================================\n\n";
+my ($dsp,$address,$user,$pw,$protocol,$homedir,$port);
 
-my @rows;
-my $csv = Text::CSV->new ( { binary => 1 } )  # should set binary attribute.
-                 or die "Cannot use CSV: ".Text::CSV->error_diag ();
+GetOptions (   'dsp=s' => \$dsp,
+                'address=s' => \$address,
+                'username=s' => \$user,
+                'pw=s' => \$pw,
+                'protocol=s' => \$protocol,
+                'homedir=s' => \$homedir,
+                'port=s' => \$port);
 
-my $file = "dsps.csv";
-#open my $fh, "<:encoding(utf8)", "$file" or die "BARF!! can't open $file -- $!";
-open my $fh, "$file" or die "BARF!! can't open $file -- $!";
-
-print "Starting Speed test -- time is " . `date` . "\n\n";
-
-while ( my $row = $csv->getline( $fh ) ) {
-    my ($dsp, $address, $user, $pw, $protocol, $notes);
-    next if ($row->[0] =~ m/service_id/);
-    if (defined $row->[1]) { $dsp = $row->[1]; }
-    if (defined $row->[8]) { $address = $row->[8]; }
-    if (defined $row->[9]) { $user = $row->[9]; }
-    if (defined $row->[10]) { $pw = $row->[10]; }
-    if (defined $row->[11]) { $protocol = $row->[11]; }
-    if (defined $row->[12]) { $notes = $row->[12]; }
-
-    next unless (defined $dsp && defined $address && defined $protocol && defined $user && defined $pw);
-    print "DSP: $dsp -- PROTOCOL: $protocol -- ADDRESS: $address -- USER: $user -- PASSWORD: $pw\n";
-    if ($protocol =~ m/^ftp/i) {
-        doFTP($dsp,$address,$user,$pw);
-    } elsif ($protocol =~ m/^sftp/i) {
-        doSFTP($dsp,$address,$user,$pw);
-    } else {
-        print "WUFF!!\n";
-    }
+unless (defined $dsp && defined $address && defined $user && defined $protocol) {
+    HELP_MESSAGE();
 }
+
+unless ($protocol =~ /[s]?ftp/i) {
+    die "Protocol has to be either 'FTP' or 'SFTP'\n";
+}
+
+#if (!defined $homedir) { $homedir = '~'; }
+
+print "\n\n#######################################################################\n";
+print "## STARTING SPEED TESTS -- time is " . `date`;
+print "## Settings -- DSP: $dsp / ADDRESS $address / USER: $user / PROTO: $protocol\n";
+if (defined $homedir) { print "## Optional homedir specified -- $homedir\n"; }
+if (defined $port) { print "## Optional port specified -- $port\n\n"; }
+
+if ($protocol =~ m/^ftp/i) {
+    doFTP($dsp,$address,$user,$pw,$homedir);
+} elsif ($protocol =~ m/^sftp/i) {
+    doSFTP($dsp,$address,$user,$pw,$homedir,$port);
+} else {
+    print "WUFF!!\n";
+}
+
+
+###################################
 
 sub doFTP {
     my $dsp = shift;
     my $host = shift;
     my $login = shift;
     my $pass = shift;
-
-    print "In FTP sub-routine..\n"; 
+    my $homedir = shift;
 
     eval {
-    print "Logging in to $host as user $login\n";
-    #exit;
-
-    my  $ftp = Net::FTP->new("$host", Debug => 0)
-      or die "Cannot connect to $host : $@";
-    $ftp->login("$login","$pass") || die "DIED while logging in - DEID\n";
-
-    #if (defined($home)) {
-    #    print "Cwding into home dir..\n";
-    #    $ftp->cwd($home);
-    #}
-
-    $ftp->mkdir($DESTDIR);
-    $ftp->cwd($DESTDIR) || die "SOMETHING IS FUUUUCKED UP!!\n";
-    print "\n" . `date`  . "Now uploading test FLACS..\n";
-    my $start = time;
-    for (my $id = 1; $id <= $FILESTOUPLOAD; $id ++) {
-        my $filename = "25MBFLAC$id.file";
-        print "\n" . `date` . "Now uploading $filename..\n";
-        $ftp->put("$filename")
-        
-    }
-    my @dirlist = $ftp->ls();
-    foreach my $item(@dirlist) {
-        print "$item\n";
-    }
-    my $time_taken = time - $start;
-    print "\n" . `date` . "--Operation took $time_taken seconds to upload $FILESTOUPLOAD files of $FILESIZE MB\n";
-    my $bw = (($FILESTOUPLOAD * $FILESIZE) * 8) / $time_taken;
-    printf "DSP: $dsp -- Bandwidth = %.2fMb/s\n", $bw;
-    printf REPORT "DSP: $dsp -- Bandwidth = %.2fMb/s\n", $bw;
+	    print "Logging in to $host as user $login\n";
+	
+	    my  $ftp = Net::FTP->new("$host", Debug => 0)
+	      or die "Cannot connect to $host : $@";
+	    $ftp->login("$login","$pass") || die "DIED while logging in - DEID! Wrong password?\n";
+	
+	    if (defined($homedir)) {
+	        print "Cwding into home dir..\n";
+	        $ftp->cwd($homedir);
+	    }
+	
+	    $ftp->mkdir($DESTDIR);
+	    $ftp->cwd($DESTDIR) || die "SOMETHING IS FUUUUCKED UP!!\n";
+	
+	    my $start = time;
+	    print "\n" . `date` . "Now uploading $FILE..\n";
+	    $ftp->put("$FILE");
+	    my $time_taken = time - $start;
+	
+	    print "\n" . `date` . "--Operation took $time_taken seconds to upload 1 file of $FILESIZE MB\n";
+	    my $bw = ($FILESIZE * 8) / $time_taken;
+	    printf "\n\nDSP: $dsp -- Bandwidth = %.2fMb/s\n\n", $bw;
+        print "#######################################################################\n";
     1;
     } or do {
-        print "Connection died.. trying next..\n";
+        print "Connection died - $@\n";
     return;
     }
 }
@@ -107,52 +109,73 @@ sub doSFTP {
     my $host = shift;
     my $login = shift;
     my $pass = shift;
-    print "\n" . `date`  . "-- IN SFTP SUB -- I gots $host -- $login -- $pass\n";
+    my $homedir = shift;
+    my $port = shift;
+
+    if (!defined $homedir) { $homedir = '.'; }
+    if (!defined $port) { $port = '22'; }
 
     eval {
-    print "Logging in to $host as user $login\n";
+        print "Logging in to $host as user $login\n";
 
-    if($pass =~ m/passwordless/) {
-        print "Using Publick Key\n";
-    }
-    my $sftp = Net::SFTP->new($host, user=>$login ,password=>$pass) || die "YA BASS!\n";
-    #my $sftp = Net::SFTP->new($host, user=>$login ,password=>$pass,debug=>'false') || die "YA BASS!\n";
-    $sftp->ls('.',\&detailz); 
-    
-    #print "DIREXISTS = $DIREXISTS\n";
-    if ($DIREXISTS == 0) {
-        my $dir_creation_result = $sftp->do_mkdir("$DESTDIR",$DIRATTRIBS);
-        if ($dir_creation_result == 1) {
-            die "OH YODA!!! SOMETHING IS HORRIBLY WRONG WITH THE FORCE...\n";
+	    if(!defined $pass) {
+	        print "Using Publick Key\n";
+	    }
+        my $sargs = "$host, user=>$login, ssh_args=>[port=>$port, protocol => '2,1', cipher => 'blowfish-cbc', compression => 1]";
+	    print "my sftp = new($sargs)\n";
+        #my $sftp = Net::SFTP->new($host, user=>$login ,password=>$pass, ssh_args=>[port=>$port, protocol => '2',  cipher => 'blowfish-cbc', compression => 'Zlib']) || die "YA BASS -- $!!\n";
+        my $sftp = Net::SFTP->new($host, user=>$login ,password=>$pass, ssh_args=>[port=>$port, protocol => '2',  cipher => 'blowfish-cbc']) || die "YA BASS -- $!!\n";
+	    #my $sftp = Net::SFTP->new($sargs) || die "YA BASS -- $!!\n";
+	    print "Logged in fine.\n";
+	
+        # CHECK IF DEST ALREADY EXISTS AND IF NOT, CREATE IT..
+	    $sftp->ls("$homedir",\&lookfordestdir); 
+	    $DESTDIR = $homedir . "/" . $DESTDIR;
+	    if ($DIREXISTS == 0) {
+	        my $dir_creation_result = $sftp->do_mkdir("$DESTDIR",$DIRATTRIBS);
+	        if ($dir_creation_result == 1) {
+	            die "OH YODA!!! SOMETHING IS HORRIBLY WRONG WITH THE FORCE...\n";
+	        }
+	    }
+
+        #CHECK IF DESTFILE EXISTS, IF SO, DELETE IT (SFTP DOESNT SEEM TO LIKE OVERWRITING)
+        $sftp->ls("$DESTDIR",\&lookfordestfile);
+        if ($FILEEXISTS ==1) {
+            print "\nremoving previously uploaded file.\n\n";
+            $sftp->do_remove("$DESTDIR/$DESTFILE");
         }
-    }
-    print "Now uploading test FLACS..\n";
-    my $start = time;
-    for (my $id = 1; $id <= $FILESTOUPLOAD; $id ++) {
-        my $filename = "25MBFLAC$id.file";
-        print "\n" . `date` . "-- Now uploading $filename..\n";
-        $sftp->put("$filename","$DESTDIR/$filename");
-        print "\n" . `date`  . "-- Finished uploading $filename..\n\n";
-    }
-    my $time_taken = time - $start;
-    print "Operation took $time_taken seconds to upload $FILESTOUPLOAD files of $FILESIZE MB\n";
-    my $bw = (($FILESTOUPLOAD * $FILESIZE) * 8) / $time_taken;
-    #printf "Bandwidth = %.2fMb/s\n", $bw;
-    printf "DSP: $dsp -- Bandwidth = %.2fMb/s\n", $bw;
-    printf REPORT "DSP: $dsp -- Bandwidth = %.2fMb/s\n", $bw;
+	
+	    my $start = time;
+	    print "\n" . `date` . "-- Now uploading $FILE to $host:$DESTDIR/$DESTFILE..\n";
+	    $sftp->put("$FILE","$DESTDIR/$DESTFILE");
+	    print "\n" . `date`  . "-- Finished uploading $DESTFILE..\n\n";
+	
+	    my $time_taken = time - $start;
+	    print "Operation took $time_taken seconds to upload 1 file of $FILESIZE MB\n";
+	    my $bw = ($FILESIZE * 8) / $time_taken;
+	    printf "DSP: $dsp -- Bandwidth = %.2fMb/s\n\n", $bw;
+        print "#######################################################################\n\n";
     1;
     } or do {
-        print "Connection died.. trying next..\n";
-    return;
+        print "\n** --  Connection died: $@\n";
+        return;
     }
 }
 
-sub detailz {
-    my $file = $_[0]->{filename};
+sub lookfordestdir {
     if ( $_[0]->{filename} =~ /$DESTDIR/ ) {
-        #print "WOOP! found tha dir!\n";
-        $DIREXISTS=1;
-    } else {
-#        print "Nope, not that one..\n";
+        $DIREXISTS = 1;
     }
+}
+sub lookfordestfile {
+    if ( $_[0]->{filename} =~ /$DESTFILE/ ) {
+        $FILEEXISTS = 1;
+    }
+}
+
+sub HELP_MESSAGE {
+    print "\n\n**bzzzzt** DOES NOT COMPUTE **zzzbcx* * *\n";
+    print "\nUsage: ./$0 --dsp DSPNAME --address UPLOADSERVER --username USERNAME --pw password --protocol SFTP --homedir ioda --port 22\n";
+    print "(password only needed if no SSH keys are used; homedir and port are optional - only needed if they are different from defaults\n";
+    exit;
 }
