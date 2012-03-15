@@ -1,0 +1,3 @@
+Speedtest is a simple script for timing uploads to an FTP or SFTP server. It takes the login parameters on the command line, uses them to login, upload a 25MB file (which you shall have to supply), times how long it takes and calculates the throughput.
+
+It could definitely be condensed, but works well enough for current needs.
