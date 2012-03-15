@@ -10,7 +10,7 @@ use Getopt::Long;
 #local ($DEBUG) = 1;
 #$| = 1;
 
-my $DESTDIR="IODA_TEST_UPLOAD";
+my $DESTDIR="TEST_UPLOAD_DIR";
 my $DESTFILE="25MBFLAC.file";
 my $DIREXISTS=0;
 my $FILEEXISTS=0;
