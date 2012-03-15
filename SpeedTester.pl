@@ -1,20 +1,23 @@
 #!/usr/bin/perl -w
 use strict;
 use Net::FTP;
-use Net::SFTP;
-use Net::SFTP::Attributes;
+use Net::SFTP::Foreign;
 use File::Basename;
 use Getopt::Long;
+use IP::Country;
 
 # Set DEBUG equal to 1 to print debugging information
 #local ($DEBUG) = 1;
 #$| = 1;
 
-my $DESTDIR="TEST_UPLOAD_DIR";
+# FOR COUNTRY LOOKUPS
+my $reg = IP::Country::Fast->new();
+
+my $DESTDIR="TEST_UPLOAD";
 my $DESTFILE="25MBFLAC.file";
 my $DIREXISTS=0;
 my $FILEEXISTS=0;
-my $DIRATTRIBS = Net::SFTP::Attributes->new();
+my $DIRATTRIBS = Net::SFTP::Foreign::Attributes->new();
 
 my $FILE = "/usr/local/Scriptz/25MBFLAC.file"; 
 unless ( -e $FILE ) {
@@ -55,10 +58,13 @@ print "## Settings -- DSP: $dsp / ADDRESS $address / USER: $user / PROTO: $proto
 if (defined $homedir) { print "## Optional homedir specified -- $homedir\n"; }
 if (defined $port) { print "## Optional port specified -- $port\n\n"; }
 
+
+my $country = $reg->inet_atocc("$address");
+
 if ($protocol =~ m/^ftp/i) {
-    doFTP($dsp,$address,$user,$pw,$homedir);
+    doFTP($dsp,$address,$user,$pw,$homedir,$country);
 } elsif ($protocol =~ m/^sftp/i) {
-    doSFTP($dsp,$address,$user,$pw,$homedir,$port);
+    doSFTP($dsp,$address,$user,$pw,$homedir,$port,$country);
 } else {
     print "WUFF!!\n";
 }
@@ -72,6 +78,7 @@ sub doFTP {
     my $login = shift;
     my $pass = shift;
     my $homedir = shift;
+    my $country = shift;
 
     eval {
 	    print "Logging in to $host as user $login\n";
@@ -95,7 +102,7 @@ sub doFTP {
 	
 	    print "\n" . `date` . "--Operation took $time_taken seconds to upload 1 file of $FILESIZE MB\n";
 	    my $bw = ($FILESIZE * 8) / $time_taken;
-	    printf "\n\nDSP: $dsp -- Bandwidth = %.2fMb/s\n\n", $bw;
+	    printf "\n\nDSP: $dsp -- Bandwidth = %.2fMb/s (protocol FTP / country $country)\n\n", $bw;
         print "#######################################################################\n";
     1;
     } or do {
@@ -111,6 +118,7 @@ sub doSFTP {
     my $pass = shift;
     my $homedir = shift;
     my $port = shift;
+    my $country = shift;
 
     if (!defined $homedir) { $homedir = '.'; }
     if (!defined $port) { $port = '22'; }
@@ -121,39 +129,52 @@ sub doSFTP {
 	    if(!defined $pass) {
 	        print "Using Publick Key\n";
 	    }
-        my $sargs = "$host, user=>$login, ssh_args=>[port=>$port, protocol => '2,1', cipher => 'blowfish-cbc', compression => 1]";
-	    print "my sftp = new($sargs)\n";
+        #my $sargs = "$host, user=>$login, ssh_args=>[port=>$port, protocol => '2,1', cipher => 'blowfish-cbc', compression => 1]";
+	    #print "my sftp = new($sargs)\n";
         #my $sftp = Net::SFTP->new($host, user=>$login ,password=>$pass, ssh_args=>[port=>$port, protocol => '2',  cipher => 'blowfish-cbc', compression => 'Zlib']) || die "YA BASS -- $!!\n";
-        my $sftp = Net::SFTP->new($host, user=>$login ,password=>$pass, ssh_args=>[port=>$port, protocol => '2',  cipher => 'blowfish-cbc']) || die "YA BASS -- $!!\n";
+        print "Logging into $host with username $login and password $pass - port is $port\n";
+        my $sftp = Net::SFTP::Foreign->new($host, user=>$login ,password=>$pass, port=>$port, more=>'-C') || die "YA BASS -- $!!\n";
 	    #my $sftp = Net::SFTP->new($sargs) || die "YA BASS -- $!!\n";
 	    print "Logged in fine.\n";
 	
         # CHECK IF DEST ALREADY EXISTS AND IF NOT, CREATE IT..
-	    $sftp->ls("$homedir",\&lookfordestdir); 
+	    my $ls = $sftp->ls("$homedir") || die "Cannot read remote dir - $homedir\n"; 
+        foreach my $d (@$ls) {
+            if ( $d->{filename} =~ /$DESTDIR/ ) {
+                $DIREXISTS = 1;
+            } 
+        }
 	    $DESTDIR = $homedir . "/" . $DESTDIR;
 	    if ($DIREXISTS == 0) {
-	        my $dir_creation_result = $sftp->do_mkdir("$DESTDIR",$DIRATTRIBS);
-	        if ($dir_creation_result == 1) {
+	        my $dir_creation_result = $sftp->mkdir("$DESTDIR");
+	        if (!$dir_creation_result == 1) {
 	            die "OH YODA!!! SOMETHING IS HORRIBLY WRONG WITH THE FORCE...\n";
 	        }
 	    }
 
         #CHECK IF DESTFILE EXISTS, IF SO, DELETE IT (SFTP DOESNT SEEM TO LIKE OVERWRITING)
-        $sftp->ls("$DESTDIR",\&lookfordestfile);
+        my $fls = $sftp->ls("$DESTDIR");
+        foreach my $f (@$fls) {
+            if ( $f->{filename} =~ /$DESTFILE/ ) {
+                $FILEEXISTS = 1;
+            } 
+        }
+
         if ($FILEEXISTS ==1) {
             print "\nremoving previously uploaded file.\n\n";
-            $sftp->do_remove("$DESTDIR/$DESTFILE");
+            my $removeresult = $sftp->remove("$DESTDIR/$DESTFILE");
+            unless ($removeresult == 1) { die "Yow, file deletion failed - $!\n"; }
         }
 	
 	    my $start = time;
 	    print "\n" . `date` . "-- Now uploading $FILE to $host:$DESTDIR/$DESTFILE..\n";
-	    $sftp->put("$FILE","$DESTDIR/$DESTFILE");
+	    $sftp->put("$FILE","$DESTDIR/$DESTFILE") or die "Puuut failed: $!\n";;
 	    print "\n" . `date`  . "-- Finished uploading $DESTFILE..\n\n";
 	
 	    my $time_taken = time - $start;
 	    print "Operation took $time_taken seconds to upload 1 file of $FILESIZE MB\n";
 	    my $bw = ($FILESIZE * 8) / $time_taken;
-	    printf "DSP: $dsp -- Bandwidth = %.2fMb/s\n\n", $bw;
+	    printf "DSP: $dsp -- Bandwidth = %.2fMb/s (protocol SFTP / country $country)\n\n", $bw;
         print "#######################################################################\n\n";
     1;
     } or do {
